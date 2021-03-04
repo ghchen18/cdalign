@@ -551,9 +551,13 @@ class SequenceAttbeam(object):
 
         encoder_outs = []
         incremental_states = {}
-        phrase_yet = src_tokens.new_zeros(bsz*beam_size, pnum).byte() # whether each constraint has already in hypo, 0: not, 1: yes
-        phrase_in = src_tokens.new_zeros(bsz*beam_size) # 0: hypo not in a unfinished constraint; >0: the unfinished constraint id that the hypo is in
-        phrase_in_count = src_tokens.new_zeros(bsz*beam_size) # position of hypo in the unfinished constraint (start from 0)
+        phrase_yet = src_tokens.new_zeros(bsz*beam_size, pnum).byte()       # whether each constraint has already in hypo, 0: not, 1: yes
+
+        ## phrase_in=0, next tgt token is not in any constraints. phrase_in=x (>0), next tgt token is from the x^th given constraint, and not finished. 
+        phrase_in = src_tokens.new_zeros(bsz*beam_size)    
+
+        phrase_in_count = src_tokens.new_zeros(bsz*beam_size)               # position of the next tgt token in the unfinished constraint (start from 0)
+        
         for model in self.models:
             if not self.retain_dropout:
                 model.eval()
@@ -714,12 +718,12 @@ class SequenceAttbeam(object):
         batch_idxs = None
         src_invalid = torch.tensor([ x in self.src_punc for x in src_tokens[0]]).nonzero().transpose(0,1)
 
-        align_k=max(beam_size,2) 
-        indices_sel=tokens.new_zeros(align_k*beam_size)
+        align_k = max(beam_size,2) 
+        indices_sel = tokens.new_zeros(align_k*beam_size)
         for i in range(beam_size):
             for j in range(align_k):
                 indices_sel[i*align_k+j] = i
-        encoder_outs_align = [] # prepare encoder output for a second forward pass with beam_size*beam_size hypos
+        encoder_outs_align = []                 # prepare encoder output for a second forward pass with beam_size*beam_size hypos
         for i, model in enumerate(self.models):
             encoder_outs_align.append(model.encoder.reorder_encoder_out(encoder_outs[i], indices_sel))
 
@@ -738,9 +742,9 @@ class SequenceAttbeam(object):
             lprobs, avg_attn_scores = self._decode(tokens[:, :step + 1], encoder_outs, incremental_states)
 
             for idx in range(tokens.size(0)):
-                if phrase_in[idx] > 0: # if hypo in a unfinished constraint
+                if phrase_in[idx] > 0:                   # if the next tgt token is in a unfinished constraint
                     tmp_pos=pdic[phrase_in[idx].item()][phrase_in_count[idx].item()]
-                    tmp = lprobs[idx,:].max().clone() # modify the output distribution
+                    tmp = lprobs[idx,:].max().clone()    # modify the output distribution and force the generation of the next tgt token in given constraint
                     lprobs[idx,:] = -math.inf
                     lprobs[idx,tmp_pos] = tmp
             lprobs[:, self.pad] = -math.inf  # never select pad
@@ -756,14 +760,15 @@ class SequenceAttbeam(object):
             eos_bbsz_idx = buffer('eos_bbsz_idx')
             eos_scores = buffer('eos_scores', type_of=scores)
             
-            if step < maxlen:             
+            if step < maxlen:    
+                # the first forward pass, extend each hypo with align_k tokens         
                 if step > 0:
                     lprobs.add_(scores.view(beam_size, -1)[:, step - 1].unsqueeze(-1)) # the accumulated scores
-                    scores_align, indices_align = torch.topk(lprobs,k=align_k) # extend each hypo with top align_k tokens
-                    indices_align = indices_align.view(-1) # the extended tokens
-                    scores_align = scores_align.view(-1) # the accumulated scores
+                    scores_align, indices_align = torch.topk(lprobs, k=align_k) # extend each hypo with top align_k tokens
+                    indices_align = indices_align.view(-1)      # the extended tokens
+                    scores_align = scores_align.view(-1)        # the accumulated scores
                 else:
-                    scores_align, indices_align = torch.topk(lprobs[0],k=align_k*beam_size) # extend each hypo with top align_k tokens
+                    scores_align, indices_align = torch.topk(lprobs[0],  k=align_k*beam_size) # extend each hypo with top align_k tokens
 
                 tokens_align = tokens.index_select(0,indices_sel) # prepare target tokens for a second forward pass
                 tokens_align[:,step+1] = indices_align
@@ -771,14 +776,16 @@ class SequenceAttbeam(object):
                 phrase_in_align = phrase_in.index_select(0,indices_sel)
                 phrase_in_count_align = phrase_in_count.index_select(0,indices_sel)
                 
+                # second forward pass to get the aligned source position for each new hypo and modify the last token if the new hypo is aligned to a source sentence
                 _, avg_attn_align = self._decode(tokens_align[:, :step + 2], encoder_outs_align, None) # second forward with align_k*beam_size tokens
+
                 tgt_valid = torch.tensor([x not in self.tgt_punc for x in tokens_align[:,step + 1]]).nonzero()
                 avg_attn_align[tgt_valid,src_invalid] = 0 # if target token is not punc but source token is punc, then set the att score to 0
                 index_src = avg_attn_align.argmax(-1) # max attention index
 
                 for idx in range(align_k*beam_size): # modify tokens_align, phrase_yet_align, phrase_in_align and phrase_in_count_align accordingly
                     if phrase_in_align[idx] == 0 and ps_mask[index_src[idx]] != 0 and indices_align[idx] != self.eos: # align to a constraint and not in a unfinished cons
-                        unfinish_mark = 1 - phrase_yet_align[idx,ps_mask[index_src[idx]]-1] # the new constraint is not in hypo yet
+                        unfinish_mark = 1 - phrase_yet_align[idx,ps_mask[index_src[idx]]-1]         # the new constraint is not in hypo yet
                         if unfinish_mark:
                             phrase_yet_align[idx,ps_mask[index_src[idx]]-1] = 1
                             phrase_in_align[idx] = ps_mask[index_src[idx]]
@@ -805,11 +812,11 @@ class SequenceAttbeam(object):
                 
                 _, idx_sorted = torch.sort(scores_align.index_select(0,idx_align),descending=True) # sort these non-repeating rows according to accumulated scores
 
-                idx_sorted = idx_sorted[:2*beam_size] # we keep top 2*beam_size hypos
-                idx_final_fsb = idx_align.index_select(0,idx_sorted) # the index of the final hypos in original *_align
+                idx_sorted = idx_sorted[:2*beam_size]                   # we keep top 2*beam_size hypos
+                idx_final_fsb = idx_align.index_select(0,idx_sorted)    # the index of the final hypos in original *_align
                 fsb = idx_final_fsb.size(0)
                 if fsb < beam_size:
-                    idx_final=idx_final_fsb.data.new_zeros(beam_size) # for step=0, it's possible non repeating hypos are less than beam_size
+                    idx_final=idx_final_fsb.data.new_zeros(beam_size)   # for step=0, it's possible non repeating hypos are less than beam_size
                     idx_final[:fsb] = idx_final_fsb
                 else:
                     idx_final = idx_final_fsb
