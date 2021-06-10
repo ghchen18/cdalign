@@ -1,4 +1,4 @@
-> Code for AAAI 2021 paper "Lexically Constrained Neural Machine Translation with Explicit Alignment Guidance"
+> Code for AAAI 2021 paper "Lexically Constrained Neural Machine Translation with Explicit Alignment Guidance". [[Paper](https://ojs.aaai.org/index.php/AAAI/article/view/17496)]
 
 ### Install and Data preprocess
 
@@ -31,5 +31,8 @@ See `scripts/run_test.sh`
   author={Guanhua, Chen and Yun, Chen and Victor O.K., Li},
   booktitle = {Proceedings of AAAI},
   year      = {2021},
+  pages  = {12630--12638},
+  volume={35},
+  number={14},
 }
 ```
