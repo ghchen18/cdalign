@@ -199,7 +199,7 @@ def main(args):
                     trg_end=word_to_bpe_trg[i][-1]+1
                 
                 cons_dict = {}
-                if tgt_cons not in trans[i] and all([is_not_punc_or_num(x) for x in src_cons.split(' ')]):
+                if tgt_cons not in trans[i] and all([is_not_punc_or_num(x) for x in src_cons.split(' ')]) and not all([x in stop_words for x in src_cons.split(' ')]):
                     cons_dict['src'] = src_cons
                     cons_dict['tgt'] = tgt_cons
                     cons_dict['src_span'] = [src_start,src_end-src_start]
