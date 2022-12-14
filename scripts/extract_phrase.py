@@ -103,7 +103,7 @@ def phrase_extraction(srctext, trgtext, alignment, max_src_len=3):
             tgt_len = f_end - f_start 
             if tgt_len < 1.6 * src_len +1 :
                 bp.update(phrases)
-    return bp
+    return sorted(bp)
 
 def group_to_len(phrases):
     phr = [[] for i in range(3)]
@@ -181,7 +181,7 @@ def main(args):
         restrict_posi=[]
 
         cons_dicts = [[],[],[]]
-        for word_num in range(3):
+        for word_num in range(1, 3+1):
             phrase = phrase_extraction(srctext, trgtext, align_int, max_src_len=word_num)
             for item in phrase:
                 src_cons = item[2]
